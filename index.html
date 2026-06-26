@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NaZ Rihal Crafts - BMS</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #EDF2EE;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            color: #111;
+        }
+        /* Smooth scrollbars for tabs */
+        div::-webkit-scrollbar {
+            height: 4px;
+        }
+        div::-webkit-scrollbar-thumb {
+            background: rgba(255,255,255,0.2);
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        /* ═══════════════════════════════════════════════════════════════════
+           FIREBASE LAYER
+        ═══════════════════════════════════════════════════════════════════ */
+        let _cfg  = null; 
+        let _sess = null; 
+
+        const LS_CFG="naz_fb_cfg", LS_SESS="naz_fb_sess";
+        function loadCfg(){  try{const v=localStorage.getItem(LS_CFG);  return v?JSON.parse(v):null;}catch{return null;}}
+        function loadSess(){ try{const v=localStorage.getItem(LS_SESS); return v?JSON.parse(v):null;}catch{return null;}}
+        function saveCfg(c){ _cfg=c;  localStorage.setItem(LS_CFG,  JSON.stringify(c));}
+        function saveSess(s){_sess=s; localStorage.setItem(LS_SESS, JSON.stringify(s));}
+        function clearSess(){_sess=null;localStorage.removeItem(LS_SESS);}
+
+        async function fbAuthPost(path,body){
+          const r=await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:${path}?key=${_cfg.apiKey}`,
+            {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+          const d=await r.json();
+          if(d.error)throw new Error(d.error.message.replace(/_/g," ").toLowerCase());
+          return d;
+        }
+        async function fbSignIn(email,password){
+          const d=await fbAuthPost("signInWithPassword",{email,password,returnSecureToken:true});
+          saveSess({uid:d.localId,idToken:d.idToken,refreshToken:d.refreshToken,email:d.email});
+        }
+        async function fbSignUp(email,password){
+          const d=await fbAuthPost("signUp",{email,password,returnSecureToken:true});
+          saveSess({uid:d.localId,idToken:d.idToken,refreshToken:d.refreshToken,email:d.email});
+        }
+        async function fbRefresh(){
+          if(!_sess?.refreshToken)throw new Error("No session");
+          const r=await fetch(`https://securetoken.googleapis.com/v1/token?key=${_cfg.apiKey}`,
+            {method:"POST",headers:{"Content-Type":"application/json"},
+             body:JSON.stringify({grant_type:"refresh_token",refresh_token:_sess.refreshToken})});
+          const d=await r.json();
+          if(d.error)throw new Error("Session expired");
+          saveSess({..._sess,idToken:d.id_token,refreshToken:d.refresh_token});
+        }
+        async function dg(k,def){
+          if(!_sess?.uid||!_cfg?.dbUrl)return def;
+          try{
+            const r=await fetch(`${_cfg.dbUrl}/naz/${_sess.uid}/${k}.json?auth=${_sess.idToken}`);
+            const d=await r.json();
+            if(d?.error)return def;
+            return(d!==null&&d!==undefined)?d:def;
+          }catch{return def;}
+        }
+        async function ds(k,v){
+          if(!_sess?.uid||!_cfg?.dbUrl)return;
+          try{
+            await fetch(`${_cfg.dbUrl}/naz/${_sess.uid}/${k}.json?auth=${_sess.idToken}`,
+              {method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(v)});
+          }catch{}
+        }
+
+        /* ═══ CONSTANTS ════════════════════════════════════════════════ */
+        const G="#1B4332",G2="#2D6A4F",AU="#C9A84C",BG="#EDF2EE",RD="#B91C1C";
+
+        const PRODS=[
+          {id:"basic",  label:"Basic Resin Rihal",     price:5000,
+           bom:{resin_g:150,hardener_g:75,pigment_g:5,box_basic:1,label:1},labourCost:500,packCost:150},
+          {id:"premium",label:"Premium Resin Rihal",    price:11000,
+           bom:{resin_g:250,hardener_g:125,pigment_g:10,glitter_g:5,box_premium:1,label:1},labourCost:900,packCost:280},
+          {id:"custom", label:"Custom/Engraved Rihal",  price:18000,
+           bom:{resin_g:300,hardener_g:150,pigment_g:15,box_premium:1,label:1},labourCost:2000,packCost:350},
+          {id:"giftset",label:"Gift-Packaged Resin Set",price:22000,
+           bom:{resin_g:350,hardener_g:175,pigment_g:20,glitter_g:10,box_gift:1,ribbon:1,tissue:2,label:1},labourCost:2200,packCost:600},
+        ];
+        const INV_M=[
+          {id:"resin_g",    label:"Epoxy Resin",   unit:"g",  warn:500,cost:5  },
+          {id:"hardener_g", label:"Hardener",       unit:"g",  warn:250,cost:3  },
+          {id:"pigment_g",  label:"Pigment/Dye",    unit:"g",  warn:50, cost:15 },
+          {id:"glitter_g",  label:"Glitter/Flakes", unit:"g",  warn:30, cost:10 },
+          {id:"box_basic",  label:"Basic Box",      unit:"pcs",warn:5,  cost:150},
+          {id:"box_premium",label:"Premium Box",    unit:"pcs",warn:5,  cost:280},
+          {id:"box_gift",   label:"Gift Box",       unit:"pcs",warn:3,  cost:600},
+          {id:"label",      label:"Branded Labels", unit:"pcs",warn:10, cost:50 },
+          {id:"ribbon",     label:"Ribbon",         unit:"pcs",warn:5,  cost:80 },
+          {id:"tissue",     label:"Tissue Paper",   unit:"pcs",warn:10, cost:30 },
+        ];
+        const ECATS=[{id:"materials",label:"Raw Materials",icon:"🧪"},{id:"packaging",label:"Packaging",icon:"📦"},{id:"equipment",label:"Equipment",icon:"🔧"},{id:"marketing",label:"Marketing",icon:"📣"},{id:"ops",label:"Operations",icon:"⚙️"}];
+        const PAY=["Cash","Bank Transfer","WhatsApp Pay","Part Payment"];
+        const DEF_INV=Object.fromEntries(INV_M.map(i=>[i.id,0]));
+        const DB={t:"naz_t",c:"naz_c",s:"naz_s",n:"naz_n"};
+
+        const fmt=n=>"₦"+Number(n||0).toLocaleString("en-NG");
+        const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,5);
+        const tod=()=>new Date().toISOString().slice(0,10);
+        const mkNo=n=>`NRC-${String(n).padStart(4,"0")}`;
+        function bomCost(p){return Object.entries(p.bom).reduce((s,[k,q])=>{const m=INV_M.find(i=>i.id===k);return s+(m?m.cost*q:0);},0);}
+        function calcS(p,qty,price,disc,del){
+          qty=+qty||1;price=+price||0;disc=+disc||0;del=+del||0;
+          const gross=price*qty,da=Math.round(disc/100*gross),rev=gross-da;
+          const mat=bomCost(p)*qty,lab=p.labourCost*qty,pkg=p.packCost*qty,cost=mat+lab+pkg+del;
+          const profit=rev-cost,margin=rev>0?Math.round(profit/rev*100):0;
+          return{gross,discAmt:da,revenue:rev,mat,lab,pkg,delivery:del,cost,profit,margin};
+        }
+
+        /* ═══ SHARED UI ════════════════════════════════════════════════════ */
+        const LBL={display:"block",fontSize:11,fontWeight:700,color:"#555",marginBottom:4,letterSpacing:.5,textTransform:"uppercase"};
+        const INP={width:"100%",padding:"9px 11px",border:"1.5px solid #ddd",borderRadius:7,fontSize:14,color:"#222",background:"#fff",boxSizing:"border-box",fontFamily:"inherit"};
+        const Card=({children,style={}})=><div style={{background:"#fff",borderRadius:12,padding:"18px 16px",border:"1px solid #E5E7EB",boxShadow:"0 1px 5px rgba(0,0,0,.05)",...style}}>{children}</div>;
+        const SH=({icon,label,color=G})=><div style={{fontSize:14,fontWeight:800,color,marginBottom:16,display:"flex",alignItems:"center",gap:7}}><span style={{fontSize:18}}>{icon}</span>{label}</div>;
+        const KV=({l,v,vc="#333",b=false})=><div style={{display:"flex",justifyContent:"space-between",fontSize:13,marginBottom:5,padding:"2px 0"}}><span style={{color:"#888"}}>{l}</span><span style={{fontWeight:b?800:600,color:vc}}>{v}</span></div>;
+        const Header=({title,sub})=><div style={{background:`linear-gradient(135deg,${G},${G2})`,borderRadius:"14px 14px 0 0",padding:"24px 20px",textAlign:"center",borderBottom:`3px solid ${AU}`}}><div style={{color:AU,fontFamily:"Georgia,serif",fontSize:30}}>رِحَال</div><div style={{color:"#fff",fontWeight:800,fontSize:18,marginTop:4}}>{title}</div>{sub&&<div style={{color:"rgba(255,255,255,.5)",fontSize:11,marginTop:2}}>{sub}</div>}</div>;
+
+        /* ═══ SETUP SCREEN ════════════════════════════════════════════════ */
+        const DB_RULES=`{\n  "rules": {\n    "naz": {\n      "$uid": {\n        ".read": "$uid === auth.uid",\n        ".write": "$uid === auth.uid"\n      }\n    }\n  }\n}`;
+
+        function SetupScreen({onDone}){
+          const [apiKey,setApiKey]=useState("");
+          const [dbUrl,setDbUrl]=useState("");
+          const [copied,setCopied]=useState(false);
+          const [err,setErr]=useState("");
+
+          function copyRules(){navigator.clipboard.writeText(DB_RULES).then(()=>{setCopied(true);setTimeout(()=>setCopied(false),2000);});}
+          function save(){
+            if(!apiKey.trim()||!dbUrl.trim()){setErr("Both fields are required.");return;}
+            if(!dbUrl.startsWith("https://")){setErr("Database URL must start with https://");return;}
+            saveCfg({apiKey:apiKey.trim(),dbUrl:dbUrl.trim().replace(/\/$/,"")});
+            onDone();
+          }
+
+          const Step=({n,title,desc})=>(
+            <div style={{display:"flex",gap:12,marginBottom:16}}>
+              <div style={{width:26,height:26,minWidth:26,background:AU,color:"#fff",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:12}}>{n}</div>
+              <div><div style={{fontWeight:700,fontSize:13,marginBottom:2}}>{title}</div><div style={{fontSize:12,color:"#777",lineHeight:1.6}}>{desc}</div></div>
+            </div>
+          );
+
+          return(
+            <div style={{background:BG,minHeight:"100vh",padding:"20px 14px",fontFamily:"'Segoe UI',Arial,sans-serif"}}>
+              <div style={{maxWidth:520,margin:"0 auto"}}>
+                <Header title="Firebase Setup" sub="One-time cloud configuration"/>
+                <Card style={{borderRadius:"0 0 14px 14px"}}>
+                  <div style={{fontSize:13,color:"#555",marginBottom:20,padding:"10px 12px",background:"#F0FDF4",borderRadius:8,lineHeight:1.7}}>
+                    🔒 Your business data will be stored securely in Firebase. Works from any phone or laptop — you'll never lose it again.
+                  </div>
+                  <Step n={1} title="Open Firebase Console" desc={<>Go to <strong>console.firebase.google.com</strong> and sign in with your Google account.</>}/>
+                  <Step n={2} title="Create a project" desc="Click Add Project → name it naz-rihal-bms → skip Google Analytics → Create Project."/>
+                  <Step n={3} title="Enable Email/Password Auth" desc="Left menu → Authentication → Get Started → Email/Password → Enable → Save."/>
+                  <Step n={4} title="Create Realtime Database" desc="Left menu → Realtime Database → Create Database → choose any region → Start in Test Mode → Enable."/>
+                  <Step n={5} title="Set security rules" desc={
+                    <div>In Realtime Database → Rules tab → replace everything with the rules below → Publish.
+                      <div style={{background:"#1a2e22",borderRadius:8,padding:12,marginTop:8,position:"relative"}}>
+                        <pre style={{margin:0,fontFamily:"monospace",fontSize:11,color:"#86efac",whiteSpace:"pre-wrap"}}>{DB_RULES}</pre>
+                        <button onClick={copyRules} style={{position:"absolute",top:8,right:8,background:AU,color:"#fff",border:"none",borderRadius:5,padding:"3px 10px",fontSize:10,fontWeight:700,cursor:"pointer"}}>{copied?"✓ Copied!":"Copy"}</button>
+                      </div>
+                    </div>
+                  }/>
+                  <Step n={6} title="Get your API Key" desc="⚙️ (gear icon) → Project Settings → Your apps → click </> web icon → Register app → copy the apiKey value."/>
+                  <Step n={7} title="Get your Database URL" desc="Realtime Database → Data → copy the URL at the top (e.g. https://naz-rihal-bms-default-rtdb.firebaseio.com)"/>
+
+                  <div style={{marginTop:8}}>
+                    <div style={{marginBottom:12}}><label style={LBL}>Firebase API Key</label><input value={apiKey} onChange={e=>setApiKey(e.target.value)} style={INP} placeholder="AIzaSy…"/></div>
+                    <div style={{marginBottom:16}}><label style={LBL}>Realtime Database URL</label><input value={dbUrl} onChange={e=>setDbUrl(e.target.value)} style={INP} placeholder="https://naz-rihal-bms-default-rtdb.firebaseio.com"/></div>
+                    {err&&<div style={{color:RD,fontSize:12,marginBottom:10,padding:"8px 12px",background:"#FEE2E2",borderRadius:6}}>{err}</div>}
+                    <button onClick={save} style={{width:"100%",background:G,color:"#fff",border:"none",borderRadius:9,padding:"13px 0",fontSize:15,fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>Save & Continue →</button>
+                  </div>
+                </Card>
+              </div>
+            </div>
+          );
+        }
+
+        /* ═══ LOGIN SCREEN ════════════════════════════════════════════════ */
+        function LoginScreen({onLogin}){
+          const [mode,setMode]=useState("login");
+          const [email,setEmail]=useState("");
+          const [pass,setPass]=useState("");
+          const [err,setErr]=useState("");
+          const [busy,setBusy]=useState(false);
+
+          async function submit(){
+            if(!email.trim()||!pass.trim()){setErr("Enter email and password.");return;}
+            setBusy(true);setErr("");
+            try{
+              if(mode==="login")await fbSignIn(email.trim(),pass);
+              else await fbSignUp(email.trim(),pass);
+              onLogin();
+            }catch(e){setErr(e.message);}
+            finally{setBusy(false);}
+          }
+
+          return(
+            <div style={{background:BG,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:16,fontFamily:"'Segoe UI',Arial,sans-serif"}}>
+              <div style={{width:"100%",maxWidth:380}}>
+                <Header title="NaZ Rihal Crafts" sub="Business Management System"/>
+                <Card style={{borderRadius:"0 0 14px 14px"}}>
+                  <div style={{display:"flex",gap:8,marginBottom:20}}>
+                    {[{v:"login",l:"Sign In"},{v:"signup",l:"Create Account"}].map(o=>(
+                      <button key={o.v} onClick={()=>{setMode(o.v);setErr("");}} style={{flex:1,background:mode===o.v?G:"#eee",color:mode===o.v?"#fff":"#555",border:"none",borderRadius:8,padding:"9px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>{o.l}</button>
+                    ))}
+                  </div>
+                  <div style={{marginBottom:12}}><label style={LBL}>Email</label><input type="email" value={email} onChange={e=>setEmail(e.target.value)} style={INP} placeholder="your@email.com"/></div>
+                  <div style={{marginBottom:16}}><label style={LBL}>Password</label><input type="password" value={pass} onChange={e=>setPass(e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()} style={INP} placeholder="Min. 6 characters"/></div>
+                  {err&&<div style={{color:RD,fontSize:12,marginBottom:12,padding:"8px 12px",background:"#FEE2E2",borderRadius:6}}>{err}</div>}
+                  <button onClick={submit} disabled={busy} style={{width:"100%",background:busy?"#aaa":G,color:"#fff",border:"none",borderRadius:9,padding:"13px 0",fontSize:15,fontWeight:800,cursor:busy?"default":"pointer",fontFamily:"inherit"}}>
+                    {busy?"Please wait…":mode==="login"?"Sign In →":"Create Account →"}
+                  </button>
+                  <div style={{textAlign:"center",fontSize:11,color:"#ccc",marginTop:14,lineHeight:1.6}}>
+                    Use the same email & password on any device.<br/>Your data stays safe in the cloud. ☁️
+                  </div>
+                </Card>
+              </div>
+            </div>
+          );
+        }
+
+        /* ═══ DASHBOARD ════════════════════════════════════════════════════ */
+        function Dashboard({sales,expenses,totalRev,totalCost,totalExp,netProfit,custs,inv,lowStock,setTab}){
+          const gp=totalRev-totalCost,gpm=totalRev>0?Math.round(gp/totalRev*100):0;
+          const outstanding=custs.reduce((s,c)=>s+(c.outstanding||0),0);
+          const custTotal=id=>sales.filter(t=>t.custId===id).reduce((s,t)=>s+t.revenue,0);
+          const top=[...custs].sort((a,b)=>custTotal(b.id)-custTotal(a.id)).filter(c=>custTotal(c.id)>0).slice(0,3);
+          return<div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
+              {[
+                {icon:"💰",l:"Revenue",   v:fmt(totalRev),  sub:`${sales.length} sales`,            c:G},
+                {icon:"📊",l:"Gross Profit",v:fmt(gp),      sub:`${gpm}% margin`,                  c:gpm>40?"#166534":gpm>20?"#B45309":RD},
+                {icon:"💸",l:"Expenses",  v:fmt(totalExp),  sub:`${expenses.length} items`,         c:RD},
+                {icon:"🏦",l:"Net Profit",v:fmt(netProfit), sub:netProfit>=0?"✓ Positive":"⚠ Check",c:netProfit>=0?"#166534":RD},
+                {icon:"👥",l:"Customers", v:custs.length,   sub:fmt(outstanding)+" outstanding",    c:"#1D4ED8"},
+                {icon:"📦",l:"Low Stock", v:lowStock.length, sub:lowStock.length?"Action needed":"All good ✓",c:lowStock.length?"#D97706":G},
+              ].map(s=><Card key={s.l} style={{padding:"14px 12px"}}>
+                <div style={{fontSize:20}}>{s.icon}</div>
+                <div style={{fontSize:19,fontWeight:800,color:s.c,fontFamily:"Georgia,serif",marginTop:3}}>{s.v}</div>
+                <div style={{fontSize:10,color:"#aaa",textTransform:"uppercase",letterSpacing:.5,fontWeight:600,marginTop:2}}>{s.l}</div>
+                <div style={{fontSize:11,color:"#ccc",marginTop:1}}>{s.sub}</div>
+              </Card>)}
+            </div>
+            {totalRev>0&&<Card style={{marginBottom:14}}>
+              <SH icon="🛍️" label="Revenue by Product"/>
+              {PRODS.map(p=>{const rev=sales.filter(t=>t.productId===p.id).reduce((s,t)=>s+t.revenue,0);if(!rev)return null;const pct=Math.round(rev/totalRev*100),units=sales.filter(t=>t.productId===p.id).reduce((s,t)=>s+t.qty,0);
+                return<div key={p.id} style={{marginBottom:14}}>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:13,marginBottom:4}}><span style={{fontWeight:600}}>{p.label}</span><span style={{color:G,fontWeight:700}}>{fmt(rev)} <span style={{color:"#ccc",fontSize:11}}>· {units}u</span></span></div>
+                  <div style={{background:"#eee",borderRadius:4,height:7}}><div style={{width:`${pct}%`,height:"100%",background:`linear-gradient(90deg,${G},${AU})`,borderRadius:4}}/></div>
+                </div>;})}
+            </Card>}
+            {top.length>0&&<Card style={{marginBottom:14}}>
+              <SH icon="⭐" label="Top Customers"/>
+              {top.map(c=><div key={c.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:"1px solid #f5f5f5"}}>
+                <div><div style={{fontWeight:700,fontSize:13}}>{c.name}</div>{c.phone&&<div style={{fontSize:11,color:"#aaa"}}>{c.phone}</div>}</div>
+                <div style={{textAlign:"right"}}><div style={{fontWeight:800,color:G}}>{fmt(custTotal(c.id))}</div>{(c.outstanding||0)>0&&<div style={{fontSize:11,color:RD,fontWeight:600}}>Owes {fmt(c.outstanding)}</div>}</div>
+              </div>)}
+            </Card>}
+            {lowStock.length>0&&<Card>
+              <SH icon="⚠️" label="Low Stock Alerts" color="#D97706"/>
+              {lowStock.map(i=><div key={i.id} style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:"1px solid #f5f5f5"}}>
+                <span style={{fontSize:13,fontWeight:600}}>{i.label}</span>
+                <span style={{fontSize:13,color:(inv[i.id]||0)===0?RD:"#D97706",fontWeight:700}}>{inv[i.id]||0} {i.unit} <span style={{fontSize:10,color:"#bbb"}}>(warn:{i.warn})</span></span>
+              </div>)}
+              <button onClick={()=>setTab("inventory")} style={{marginTop:12,background:AU,color:"#fff",border:"none",borderRadius:7,padding:"9px 16px",fontSize:13,fontWeight:700,cursor:"pointer"}}>Go to Inventory →</button>
+            </Card>}
+            {sales.length===0&&<Card style={{textAlign:"center",padding:48}}>
+              <div style={{fontSize:44,marginBottom:10}}>☁️</div>
+              <div style={{fontWeight:700,fontSize:17,color:"#333"}}>Welcome to NaZ Rihal BMS</div>
+              <div style={{fontSize:13,color:"#aaa",marginTop:6}}>Your data is synced to Firebase. Start by adding inventory, then record your first sale.</div>
+            </Card>}
+          </div>;
+        }
+
+        /* ═══ SALES / POS ══════════════════════════════════════════════════ */
+        function SalesTab({custs,inv,ctr,onSale}){
+          const [f,setF]=useState({date:tod(),custId:"",isNew:false,newName:"",newPhone:"",newWA:"",productId:"basic",qty:1,price:PRODS[0].price,disc:0,delivery:0,payment:"Cash",note:"",paid:true});
+          const [err,setErr]=useState("");
+          const set=k=>v=>setF(p=>({...p,[k]:v}));
+          const setE=e=>setF(p=>({...p,[e.target.name]:e.target.value}));
+          const prod=PRODS.find(p=>p.id===f.productId)||PRODS[0];
+          const calc=calcS(prod,f.qty,f.price,f.disc,f.delivery);
+          const selCust=custs.find(c=>c.id===f.custId);
+
+          function submit(){
+            if(!f.isNew&&!f.custId){setErr("Select or add a customer.");return;}
+            if(f.isNew&&!f.newName.trim()){setErr("Enter customer name.");return;}
+            setErr("");
+            const newInv={...inv};
+            Object.entries(prod.bom).forEach(([k,q])=>{newInv[k]=Math.max(0,(newInv[k]||0)-q*(+f.qty||1));});
+            let custId=f.custId,newCusts=custs;
+            if(f.isNew){const nc={id:uid(),name:f.newName.trim(),phone:f.newPhone.trim(),whatsapp:f.newWA.trim()||f.newPhone.trim(),address:"",notes:"",outstanding:0,createdAt:tod()};custId=nc.id;newCusts=[nc,...custs];}
+            if(!f.paid||f.payment==="Part Payment"){newCusts=newCusts.map(c=>c.id===custId?{...c,outstanding:(c.outstanding||0)+calc.revenue}:c);}
+            const txn={id:uid(),kind:"sale",invNo:mkNo(ctr),date:f.date,productId:prod.id,productLabel:prod.label,qty:+f.qty,price:+f.price,disc:+f.disc,...calc,payment:f.payment,custId,note:f.note.trim(),paid:f.paid};
+            onSale(txn,newCusts,newInv,ctr+1);
+            setF(p=>({...p,qty:1,disc:0,delivery:0,note:"",isNew:false,newName:"",newPhone:"",newWA:"",custId:"",paid:true}));
+          }
+
+          return<Card>
+            <SH icon="💳" label="Record New Sale"/>
+            <div style={{marginBottom:18}}>
+              <label style={LBL}>Customer</label>
+              <div style={{display:"flex",gap:8,marginBottom:8}}>
+                {[{v:false,l:"Existing"},{v:true,l:"+ New Customer"}].map(o=><button key={String(o.v)} onClick={()=>set("isNew")(o.v)} style={{background:f.isNew===o.v?G:"#eee",color:f.isNew===o.v?"#fff":"#555",border:"none",borderRadius:6,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>{o.l}</button>)}
+              </div>
+              {!f.isNew
+                ?<select name="custId" value={f.custId} onChange={setE} style={INP}><option value="">— Select customer —</option>{custs.map(c=><option key={c.id} value={c.id}>{c.name}{c.phone?` · ${c.phone}`:""}</option>)}</select>
+                :<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                   <div style={{gridColumn:"1/-1"}}><input name="newName" value={f.newName} onChange={setE} style={INP} placeholder="Full name *"/></div>
+                   <input name="newPhone" value={f.newPhone} onChange={setE} style={INP} placeholder="Phone number"/>
+                   <input name="newWA"    value={f.newWA}    onChange={setE} style={INP} placeholder="WhatsApp (if different)"/>
+                 </div>}
+              {selCust&&(selCust.outstanding||0)>0&&<div style={{marginTop:6,padding:"6px 10px",background:"#FFF3CD",borderRadius:6,fontSize:12,color:"#856404"}}>⚠️ Outstanding balance: <strong>{fmt(selCust.outstanding)}</strong></div>}
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:16}}>
+              <div style={{gridColumn:"1/-1"}}><label style={LBL}>Product</label>
+                <select value={f.productId} onChange={e=>{const p=PRODS.find(x=>x.id===e.target.value);setF(p2=>({...p2,productId:e.target.value,price:p.price}));}} style={INP}>
+                  {PRODS.map(p=>{const ok=Object.entries(p.bom).every(([k,q])=>(inv[k]||0)>=q);return<option key={p.id} value={p.id}>{p.label} — {fmt(p.price)}{!ok?" ⚠️":""}</option>;})}
+                </select></div>
+              <div><label style={LBL}>Date</label><input type="date" name="date" value={f.date} onChange={setE} style={INP}/></div>
+              <div><label style={LBL}>Payment</label><select name="payment" value={f.payment} onChange={setE} style={INP}>{PAY.map(m=><option key={m}>{m}</option>)}</select></div>
+              <div><label style={LBL}>Qty</label><input type="number" name="qty" min="1" value={f.qty} onChange={setE} style={INP}/></div>
+              <div><label style={LBL}>Unit Price (₦)</label><input type="number" name="price" value={f.price} onChange={setE} style={INP}/></div>
+              <div><label style={LBL}>Discount (%)</label><input type="number" name="disc" min="0" max="100" value={f.disc} onChange={setE} style={INP} placeholder="0"/></div>
+              <div><label style={LBL}>Delivery (₦)</label><input type="number" name="delivery" min="0" value={f.delivery} onChange={setE} style={INP} placeholder="0"/></div>
+              <div style={{gridColumn:"1/-1"}}><label style={LBL}>Note (optional)</label><input name="note" value={f.note} onChange={setE} style={INP} placeholder="e.g. Custom engraving text, colour…"/></div>
+            </div>
+            <div style={{display:"flex",gap:8,marginBottom:16}}>
+              {[{v:true,l:"✓ Fully Paid"},{v:false,l:"⏳ Unpaid / Part Payment"}].map(o=><button key={String(o.v)} onClick={()=>set("paid")(o.v)} style={{background:f.paid===o.v?G:"#eee",color:f.paid===o.v?"#fff":"#555",border:"none",borderRadius:7,padding:"8px 16px",fontSize:12,fontWeight:700,cursor:"pointer"}}>{o.l}</button>)}
+            </div>
+            <div style={{background:"linear-gradient(135deg,#F0FDF4,#ECFDF5)",borderRadius:10,padding:16,border:`1px solid ${G2}44`,marginBottom:14}}>
+              <div style={{fontWeight:800,color:G,fontSize:12,marginBottom:10,textTransform:"uppercase",letterSpacing:.5}}>📊 Profit Breakdown</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"2px 16px"}}>
+                <KV l="Revenue" v={fmt(calc.revenue)} vc={G}/><KV l="Material Cost" v={fmt(calc.mat)} vc={RD}/>
+                <KV l="Labour"  v={fmt(calc.lab)} vc="#D97706"/><KV l="Packaging" v={fmt(calc.pkg)} vc="#7C3AED"/>
+                {calc.delivery>0&&<KV l="Delivery" v={fmt(calc.delivery)} vc="#1D4ED8"/>}
+                <KV l="Total Cost" v={fmt(calc.cost)} vc={RD}/>
+              </div>
+              <div style={{marginTop:12,padding:"10px 14px",background:calc.profit>=0?G:RD,borderRadius:8,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <span style={{color:AU,fontWeight:800,fontSize:12,letterSpacing:.5}}>NET PROFIT</span>
+                <div style={{textAlign:"right"}}><div style={{color:"#fff",fontWeight:800,fontSize:20,fontFamily:"Georgia,serif"}}>{fmt(calc.profit)}</div><div style={{color:"rgba(255,255,255,.7)",fontSize:11}}>{calc.margin}% margin</div></div>
+              </div>
+            </div>
+            <div style={{background:"#FFF9F0",borderRadius:8,padding:12,border:"1px solid #FED7AA",marginBottom:16}}>
+              <div style={{fontSize:11,fontWeight:700,color:"#D97706",textTransform:"uppercase",letterSpacing:.5,marginBottom:8}}>📦 Materials to Deduct ({f.qty} unit{f.qty>1?"s":""})</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                {Object.entries(prod.bom).map(([k,q])=>{const item=INV_M.find(i=>i.id===k),use=q*(+f.qty||1),avail=inv[k]||0,ok=avail>=use;return<span key={k} style={{fontSize:11,padding:"3px 10px",borderRadius:20,background:ok?"#DCFCE7":"#FEE2E2",color:ok?"#166534":RD,fontWeight:600}}>{item?.label}: {use}{item?.unit}{ok?"":" ⚠️"}</span>;})}
+              </div>
+            </div>
+            {err&&<div style={{color:RD,fontSize:13,marginBottom:10,padding:"8px 12px",background:"#FEE2E2",borderRadius:6}}>{err}</div>}
+            <button onClick={submit} style={{width:"100%",background:G,color:"#fff",border:"none",borderRadius:9,padding:"14px 0",fontSize:15,fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>✓ Record Sale & Generate Invoice</button>
+          </Card>;
+        }
+
+        /* ═══ CUSTOMERS ════════════════════════════════════════════════════ */
+        function CustomersTab({custs,txns,saveCusts,showFlash}){
+          const [search,setSearch]=useState("");
+          const [adding,setAdding]=useState(false);
+          const [sel,setSel]=useState(null);
+          const [form,setForm]=useState({name:"",phone:"",whatsapp:"",address:"",notes:""});
+          const setFE=e=>setForm(p=>({...p,[e.target.name]:e.target.value}));
+          const custSales=id=>txns.filter(t=>t.kind==="sale"&&t.custId===id);
+          const custTotal=id=>custSales(id).reduce((s,t)=>s+t.revenue,0);
+
+          function addCust(){
+            if(!form.name.trim())return;
+            const c={id:uid(),...form,name:form.name.trim(),outstanding:0,createdAt:tod()};
+            saveCusts([c,...custs]);showFlash("✓ Customer saved!");
+            setAdding(false);setForm({name:"",phone:"",whatsapp:"",address:"",notes:""});
+          }
+          function markPaid(c){const u={...c,outstanding:0};saveCusts(custs.map(x=>x.id===c.id?u:x));setSel(u);showFlash("✓ Balance cleared!");}
+          function deleteCust(id){saveCusts(custs.filter(c=>c.id!==id));setSel(null);showFlash("Customer removed.");}
+
+          const filtered=custs.filter(c=>c.name.toLowerCase().includes(search.toLowerCase())||c.phone?.includes(search));
+
+          if(sel){
+            const cs=custSales(sel.id),ct=custTotal(sel.id);
+            return<div>
+              <button onClick={()=>setSel(null)} style={{marginBottom:14,background:"none",border:"none",color:G,fontWeight:700,fontSize:13,cursor:"pointer"}}>← All Customers</button>
+              <Card>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:10,marginBottom:16}}>
+                  <div>
+                    <div style={{fontSize:22,fontWeight:800,color:G}}>{sel.name}</div>
+                    {sel.phone&&<div style={{fontSize:13,color:"#666",marginTop:3}}>📞 {sel.phone}</div>}
+                    {sel.whatsapp&&sel.whatsapp!==sel.phone&&<div style={{fontSize:13,color:"#25D366",marginTop:2}}>💬 {sel.whatsapp}</div>}
+                    {sel.address&&<div style={{fontSize:13,color:"#666",marginTop:2}}>📍 {sel.address}</div>}
+                    {sel.notes&&<div style={{fontSize:12,color:"#aaa",marginTop:4,fontStyle:"italic"}}>{sel.notes}</div>}
+                  </div>
+                  <div style={{textAlign:"right"}}>
+                    <div style={{fontSize:22,fontWeight:800,color:G,fontFamily:"Georgia,serif"}}>{fmt(ct)}</div>
+                    <div style={{fontSize:10,color:"#aaa",textTransform:"uppercase",letterSpacing:.5}}>Total Purchased</div>
+                    <div style={{fontSize:12,color:"#aaa",marginTop:1}}>{cs.length} order{cs.length!==1?"s":""}</div>
+                    {(sel.outstanding||0)>0&&<div style={{marginTop:8}}><div style={{color:RD,fontWeight:700,fontSize:14}}>{fmt(sel.outstanding)} outstanding</div><button onClick={()=>markPaid(sel)} style={{marginTop:4,background:G,color:"#fff",border:"none",borderRadius:6,padding:"5px 12px",fontSize:11,fontWeight:700,cursor:"pointer"}}>Mark as Paid</button></div>}
+                  </div>
+                </div>
+                {sel.phone&&<div style={{display:"flex",gap:8,marginBottom:16}}>
+                  <a href={`tel:${sel.phone}`} style={{flex:1,background:"#F0F4F8",color:"#333",borderRadius:7,padding:"8px 0",fontSize:12,fontWeight:700,textAlign:"center",textDecoration:"none"}}>📞 Call</a>
+                  <a href={`https://wa.me/${(sel.whatsapp||sel.phone).replace(/\D/g,"")}`} target="_blank" rel="noreferrer" style={{flex:1,background:"#25D366",color:"#fff",borderRadius:7,padding:"8px 0",fontSize:12,fontWeight:700,textAlign:"center",textDecoration:"none"}}>💬 WhatsApp</a>
+                </div>}
+                <div style={{fontWeight:700,fontSize:13,color:"#555",marginBottom:10}}>Purchase History</div>
+                {cs.length===0?<div style={{textAlign:"center",padding:24,color:"#ccc",fontSize:13}}>No purchases yet.</div>:
+                  cs.map(t=><div key={t.id} style={{display:"flex",justifyContent:"space-between",padding:"10px 0",borderBottom:"1px solid #f5f5f5"}}>
+                    <div><div style={{fontWeight:600,fontSize:13}}>{t.productLabel}</div><div style={{color:"#999",fontSize:11,marginTop:1}}>{t.date} · {t.invNo} · {t.qty}u · {t.payment}</div></div>
+                    <div style={{textAlign:"right"}}><div style={{fontWeight:700,color:G}}>{fmt(t.revenue)}</div><div style={{fontSize:11,color:t.paid?"#16A34A":RD,fontWeight:600}}>{t.paid?"Paid":"Unpaid"}</div></div>
+                  </div>)
+                }
+                <button onClick={()=>deleteCust(sel.id)} style={{marginTop:16,background:"none",border:"1px solid #ddd",borderRadius:7,padding:"7px 14px",color:"#bbb",fontSize:12,cursor:"pointer"}}>Remove Customer</button>
+              </Card>
+            </div>;
+          }
+
+          return<div>
+            <div style={{display:"flex",gap:10,marginBottom:14}}>
+              <input value={search} onChange={e=>setSearch(e.target.value)} style={{...INP,flex:1}} placeholder="🔍 Search by name or phone…"/>
+              <button onClick={()=>setAdding(!adding)} style={{background:G,color:"#fff",border:"none",borderRadius:8,padding:"9px 16px",fontWeight:700,fontSize:13,cursor:"pointer",whiteSpace:"nowrap"}}>+ Add</button>
+            </div>
+            {adding&&<Card style={{marginBottom:14,border:`2px solid ${AU}`}}>
+              <SH icon="👤" label="New Customer"/>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                <div style={{gridColumn:"1/-1"}}><label style={LBL}>Name *</label><input name="name" value={form.name} onChange={setFE} style={INP} placeholder="Full name"/></div>
+                <div><label style={LBL}>Phone</label><input name="phone" value={form.phone} onChange={setFE} style={INP} placeholder="+234…"/></div>
+                <div><label style={LBL}>WhatsApp</label><input name="whatsapp" value={form.whatsapp} onChange={setFE} style={INP} placeholder="if different"/></div>
+                <div style={{gridColumn:"1/-1"}}><label style={LBL}>Address</label><input name="address" value={form.address} onChange={setFE} style={INP} placeholder="City / area"/></div>
+                <div style={{gridColumn:"1/-1"}}><label style={LBL}>Notes</label><input name="notes" value={form.notes} onChange={setFE} style={INP} placeholder="e.g. Prefers green rihals, orders for mosque gifts"/></div>
+              </div>
+              <div style={{display:"flex",gap:8,marginTop:12}}>
+                <button onClick={addCust} style={{background:G,color:"#fff",border:"none",borderRadius:7,padding:"10px 20px",fontWeight:700,fontSize:13,cursor:"pointer"}}>Save</button>
+                <button onClick={()=>setAdding(false)} style={{background:"#eee",color:"#555",border:"none",borderRadius:7,padding:"10px 16px",fontSize:13,cursor:"pointer"}}>Cancel</button>
+              </div>
+            </Card>}
+            {filtered.length===0?<Card style={{textAlign:"center",padding:40}}><div style={{fontSize:36,marginBottom:8}}>👥</div><div style={{color:"#aaa"}}>No customers yet.</div></Card>:
+              filtered.map(c=>{const ct=custTotal(c.id),cn=custSales(c.id).length;return<div key={c.id} onClick={()=>setSel(c)} style={{background:"#fff",borderRadius:10,padding:"14px 16px",marginBottom:8,border:"1px solid #eee",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center",boxShadow:"0 1px 3px rgba(0,0,0,.04)"}}>
+                <div><div style={{fontWeight:700,fontSize:14}}>{c.name}</div><div style={{fontSize:12,color:"#999",marginTop:2}}>{c.phone?`📞 ${c.phone} · `:""}{cn} order{cn!==1?"s":""}</div>{(c.outstanding||0)>0&&<div style={{fontSize:11,color:RD,fontWeight:700,marginTop:2}}>Owes {fmt(c.outstanding)}</div>}</div>
+                <div style={{textAlign:"right"}}><div style={{fontWeight:800,color:G,fontSize:15}}>{fmt(ct)}</div><div style={{fontSize:11,color:"#ccc"}}>total spent</div></div>
+              </div>;})}
+          </div>;
+        }
+
+        /* ═══ INVENTORY ════════════════════════════════════════════════════ */
+        function InventoryTab({inv,saveInv,showFlash}){
+          const [adds,setAdds]=useState(Object.fromEntries(INV_M.map(i=>[i.id,""])));
+          function restock(id){const amt=+adds[id]||0;if(amt<=0)return;saveInv({...inv,[id]:(inv[id]||0)+amt});setAdds(a=>({...a,[id]:""}));showFlash(`✓ ${INV_M.find(i=>i.id===id)?.label} restocked!`);}
+          function setStock(id){const amt=+adds[id];if(isNaN(amt)||amt<0)return;saveInv({...inv,[id]:amt});setAdds(a=>({...a,[id]:""}));showFlash(`✓ Set to ${amt}!`);}
+          const cats=[{label:"Resin & Chemicals",ids:["resin_g","hardener_g","pigment_g","glitter_g"]},{label:"Packaging Materials",ids:["box_basic","box_premium","box_gift","label","ribbon","tissue"]}];
+          return<div>{cats.map(cat=><Card key={cat.label} style={{marginBottom:14}}>
+            <SH icon="📦" label={cat.label}/>
+            {cat.ids.map(id=>{const item=INV_M.find(i=>i.id===id),qty=inv[id]||0,low=qty<=item.warn,pct=Math.min(100,Math.round(qty/(item.warn*4)*100));
+              return<div key={id} style={{padding:"12px 0",borderBottom:"1px solid #f5f5f5"}}>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <span style={{fontWeight:700,fontSize:13}}>{item.label}</span>
+                    <span style={{fontSize:10,padding:"2px 8px",borderRadius:20,fontWeight:700,background:qty===0?"#FEE2E2":low?"#FEF9C3":"#DCFCE7",color:qty===0?RD:low?"#854D0E":"#166534"}}>{qty} {item.unit}</span>
+                    {low&&<span style={{fontSize:10,color:"#D97706"}}>⚠️ LOW</span>}
+                  </div>
+                  <span style={{fontSize:10,color:"#ccc"}}>cost:{fmt(item.cost)}/{item.unit}</span>
+                </div>
+                <div style={{background:"#eee",borderRadius:4,height:6,marginBottom:8}}><div style={{width:`${pct}%`,height:"100%",background:qty===0?RD:low?"#EAB308":G,borderRadius:4}}/></div>
+                <div style={{display:"flex",gap:6}}>
+                  <input type="number" min="0" value={adds[id]} onChange={e=>setAdds(a=>({...a,[id]:e.target.value}))} style={{...INP,flex:1,padding:"7px 10px",fontSize:13}} placeholder="Amount…"/>
+                  <button onClick={()=>restock(id)} style={{background:G,color:"#fff",border:"none",borderRadius:7,padding:"7px 12px",fontSize:12,fontWeight:700,cursor:"pointer"}}>+ Add</button>
+                  <button onClick={()=>setStock(id)} style={{background:"#eee",color:"#555",border:"none",borderRadius:7,padding:"7px 12px",fontSize:11,cursor:"pointer"}}>Set</button>
+                </div>
+              </div>;})}
+          </Card>)}</div>;
+        }
+
+        /* ═══ INVOICES LIST ════════════════════════════════════════════════ */
+        function InvoicesTab({sales,custs,setModal}){
+          const getCust=id=>custs.find(c=>c.id===id)||{name:"Customer"};
+          return<Card><SH icon="🧾" label={`Invoice History (${sales.length})`}/>
+            {sales.length===0?<div style={{textAlign:"center",padding:32,color:"#ccc"}}><div style={{fontSize:36,marginBottom:8}}>🧾</div>No invoices yet.</div>:
+              sales.map(t=>{const cust=getCust(t.custId);return<div key={t.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 0",borderBottom:"1px solid #f5f5f5",cursor:"pointer"}} onClick={()=>setModal({type:"invoice",txn:t,custs})}>
+                <div><div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3}}><span style={{fontWeight:800,color:G,fontSize:13}}>{t.invNo}</span><span style={{fontSize:10,padding:"2px 8px",borderRadius:20,fontWeight:700,background:t.paid?"#DCFCE7":"#FEE2E2",color:t.paid?"#166534":RD}}>{t.paid?"✓ Paid":"Unpaid"}</span></div><div style={{fontSize:13,color:"#333"}}>{cust.name} · {t.productLabel}</div><div style={{fontSize:11,color:"#aaa",marginTop:1}}>{t.date} · {t.qty}u · {t.payment}</div></div>
+                <div style={{textAlign:"right"}}><div style={{fontWeight:800,color:G,fontSize:15}}>{fmt(t.revenue)}</div><div style={{fontSize:11,color:t.profit>=0?"#16A34A":RD}}>Profit {fmt(t.profit)}</div></div>
+              </div>;})
+            }
+          </Card>;
+        }
+
+        /* ═══ EXPENSES ═════════════════════════════════════════════════════ */
+        function ExpensesTab({txns,saveTxns,showFlash}){
+          const [f,setF]=useState({date:tod(),cat:"materials",item:"Epoxy Resin",amount:"",vendor:"",note:""});
+          const setFE=e=>setF(p=>({...p,[e.target.name]:e.target.value}));
+          const expenses=txns.filter(t=>t.kind==="expense");
+          function submit(){
+            if(!f.amount||!f.date)return;
+            saveTxns([{id:uid(),kind:"expense",date:f.date,cat:f.cat,item:f.item.trim(),amount:+f.amount,vendor:f.vendor.trim(),note:f.note.trim()},...txns]);
+            showFlash("✓ Expense recorded!");setF(p=>({...p,amount:"",vendor:"",note:""}));
+          }
+          return<div>
+            <Card style={{marginBottom:14}}>
+              <SH icon="💸" label="Record Expense" color={RD}/>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                <div><label style={LBL}>Date</label><input type="date" name="date" value={f.date} onChange={setFE} style={INP}/></div>
+                <div><label style={LBL}>Category</label><select name="cat" value={f.cat} onChange={setFE} style={INP}>{ECATS.map(c=><option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}</select></div>
+                <div style={{gridColumn:"1/-1"}}><label style={LBL}>Item</label><input name="item" value={f.item} onChange={setFE} style={INP} placeholder="What was purchased?"/></div>
+                <div><label style={LBL}>Amount (₦)</label><input type="number" name="amount" value={f.amount} onChange={setFE} style={INP} placeholder="0"/></div>
+                <div><label style={LBL}>Vendor</label><input name="vendor" value={f.vendor} onChange={setFE} style={INP} placeholder="e.g. Zaria market"/></div>
+                <div style={{gridColumn:"1/-1"}}><label style={LBL}>Note</label><input name="note" value={f.note} onChange={setFE} style={INP} placeholder="Additional details"/></div>
+              </div>
+              <button onClick={submit} style={{marginTop:14,background:RD,color:"#fff",border:"none",borderRadius:8,padding:"12px 0",width:"100%",fontSize:14,fontWeight:700,cursor:"pointer"}}>Record Expense</button>
+            </Card>
+            <Card>
+              <SH icon="📋" label={`Expense History (${expenses.length})`}/>
+              {expenses.length===0?<div style={{textAlign:"center",padding:24,color:"#ccc",fontSize:13}}>No expenses yet.</div>:
+                expenses.map(t=><div key={t.id} style={{display:"flex",justifyContent:"space-between",padding:"10px 0",borderBottom:"1px solid #f5f5f5",fontSize:13}}>
+                  <div><div style={{fontWeight:600}}>{t.item}</div><div style={{fontSize:11,color:"#aaa",marginTop:1}}>{t.date}{t.vendor?` · ${t.vendor}`:""}</div></div>
+                  <div style={{fontWeight:700,color:RD}}>−{fmt(t.amount)}</div>
+                </div>)
+              }
+            </Card>
+          </div>;
+        }
+
+        /* ═══ INVOICE MODAL ════════════════════════════════════════════════ */
+        function InvoiceModal({txn,custs,onClose}){
+          const cust=custs?.find(c=>c.id===txn.custId)||{name:"Customer",phone:"",whatsapp:"",address:""};
+          function doPrint(){
+            const w=window.open("","_blank","width=480,height=700");
+            w.document.write(`<!DOCTYPE html><html><head><title>${txn.invNo}</title><style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:'Segoe UI',Arial,sans-serif;background:#fff;color:#111;}.page{max-width:420px;margin:0 auto;}.hdr{background:#1B4332;color:#fff;padding:22px 20px;text-align:center;}.gold{color:#C9A84C;}.sec{padding:14px 20px;border-bottom:1px solid #eee;}.row{display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px;}.tot{background:#1B4332;padding:14px 20px;display:flex;justify-content:space-between;align-items:center;}.profit{background:#F0FDF4;padding:12px 20px;}.note{text-align:center;padding:14px 20px;font-size:11px;color:#999;}.pb{display:inline-block;padding:3px 12px;border-radius:20px;font-weight:700;font-size:11px;}@media print{@page{margin:0;}body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}</style></head><body><div class="page">
+              <div class="hdr"><div style="font-size:28px;font-family:Georgia,serif;color:#C9A84C;">رِحَال</div><div style="font-size:19px;font-weight:800;margin-top:4px;">NaZ Rihal Crafts</div><div style="font-size:11px;opacity:.6;margin-top:2px;">Handcrafted Resin Qur'an Holders · Zaria, Nigeria</div></div>
+              <div class="sec" style="background:#FFF9F0;display:flex;justify-content:space-between;align-items:center;"><div><div style="font-size:20px;font-weight:800;color:#1B4332;">${txn.invNo}</div><div style="font-size:11px;color:#aaa;">${txn.date}</div></div><span class="pb" style="background:${txn.paid?"#DCFCE7":"#FEE2E2"};color:${txn.paid?"#166534":"#B91C1C"};">${txn.paid?"✓ PAID":"⏳ UNPAID"}</span></div>
+              <div class="sec"><div style="font-size:10px;font-weight:700;color:#999;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Bill To</div><div style="font-weight:700;font-size:14px;">${cust.name}</div>${cust.phone?`<div style="font-size:12px;color:#666;margin-top:2px;">📞 ${cust.phone}</div>`:""}</div>
+              <div class="sec"><div style="font-size:10px;font-weight:700;color:#999;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;">Order</div><div class="row"><span style="font-weight:700;">${txn.productLabel}</span></div><div class="row"><span style="color:#666;">Qty × Price</span><span>${txn.qty} × ₦${Number(txn.price).toLocaleString("en-NG")}</span></div>${txn.disc>0?`<div class="row"><span style="color:#666;">Discount −${txn.disc}%</span><span style="color:#B91C1C;">−₦${Number(txn.discAmt).toLocaleString("en-NG")}</span></div>`:""}<div class="row"><span style="color:#666;">Payment</span><span>${txn.payment}</span></div></div>
+              <div class="profit"><div style="font-size:10px;font-weight:700;color:#166534;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Cost Breakdown</div><div class="row"><span>Material</span><span>₦${Number(txn.mat).toLocaleString("en-NG")}</span></div><div class="row"><span>Labour</span><span>₦${Number(txn.lab).toLocaleString("en-NG")}</span></div><div class="row"><span>Packaging</span><span>₦${Number(txn.pkg).toLocaleString("en-NG")}</span></div><div class="row" style="border-top:1px solid #BBF7D0;padding-top:6px;margin-top:4px;"><span style="font-weight:700;">Profit</span><span style="font-weight:800;color:${txn.profit>=0?"#166534":"#B91C1C"};">₦${Number(txn.profit).toLocaleString("en-NG")} (${txn.margin}%)</span></div></div>
+              <div class="tot"><span style="color:#C9A84C;font-weight:800;letter-spacing:.5px;">TOTAL</span><span style="color:#fff;font-size:22px;font-weight:800;font-family:Georgia,serif;">₦${Number(txn.revenue).toLocaleString("en-NG")}</span></div>
+              <div style="text-align:center;padding:12px;"><img src="https://api.qrserver.com/v1/create-qr-code/?size=80x80&data=https://wa.me/2348000000000" style="border-radius:6px;border:1px solid #eee;"/><div style="font-size:10px;color:#ccc;margin-top:4px;">Scan to WhatsApp us</div></div>
+              ${txn.note?`<div class="note" style="border-top:1px solid #eee;">📝 <em>${txn.note}</em></div>`:""}
+              <div class="note">Jazakumullahu khayran for choosing NaZ Rihal Crafts.<br/>May this Rihal bring barakah to your home. 🤲</div>
+            </div></body></html>`);
+            w.document.close();w.focus();setTimeout(()=>w.print(),500);
+          }
+          function doWhatsApp(){
+            const lines=[`🌿 *NaZ Rihal Crafts* — رِحَال`,`━━━━━━━━━━━━━━━━━━━━━`,`📄 *Invoice ${txn.invNo}* | 📅 ${txn.date}`,``,`👤 *Customer:* ${cust.name}`,``,`🛍️ *${txn.productLabel}*`,`   Qty: ${txn.qty} × ₦${Number(txn.price).toLocaleString("en-NG")}`,txn.disc>0?`   Discount: −${txn.disc}%`:null,txn.delivery>0?`   Delivery: +₦${Number(txn.delivery).toLocaleString("en-NG")}`:null,``,`💳 Payment: ${txn.payment}`,`✅ Status: ${txn.paid?"*PAID* ✓":"*UNPAID* ⏳"}`,`💰 *Total: ₦${Number(txn.revenue).toLocaleString("en-NG")}*`,txn.note?`📝 ${txn.note}`:null,`━━━━━━━━━━━━━━━━━━━━━`,`_Jazakumullahu khayran! May this Rihal bring barakah. 🤲_`].filter(Boolean).join("\n");
+            const num=(cust.whatsapp||cust.phone||"").replace(/\D/g,"");
+            window.open(`https://wa.me/${num||""}?text=${encodeURIComponent(lines)}`,"_blank");
+          }
+          return<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.65)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:16}} onClick={onClose}>
+            <div style={{background:"#fff",borderRadius:14,maxWidth:430,width:"100%",maxHeight:"92vh",overflowY:"auto",boxShadow:"0 24px 80px rgba(0,0,0,.35)"}} onClick={e=>e.stopPropagation()}>
+              <div style={{background:`linear-gradient(135deg,${G},${G2})`,padding:"22px 20px",borderRadius:"14px 14px 0 0",textAlign:"center"}}>
+                <div style={{color:AU,fontFamily:"Georgia,serif",fontSize:28}}>رِحَال</div>
+                <div style={{color:"#fff",fontWeight:800,fontSize:18}}>NaZ Rihal Crafts</div>
+                <div style={{color:"rgba(255,255,255,.5)",fontSize:11,marginTop:2}}>Handcrafted Resin Qur'an Holders · Zaria, Nigeria</div>
+                <div style={{display:"flex",justifyContent:"center",gap:10,marginTop:12}}>
+                  <span style={{background:"rgba(255,255,255,.15)",color:AU,fontWeight:800,fontSize:14,padding:"5px 16px",borderRadius:20}}>{txn.invNo}</span>
+                  <span style={{background:txn.paid?"#86efac":"#fca5a5",color:txn.paid?"#166534":RD,fontWeight:800,fontSize:11,padding:"5px 14px",borderRadius:20}}>{txn.paid?"✓ PAID":"⏳ UNPAID"}</span>
+                </div>
+              </div>
+              <div style={{padding:"18px 20px"}}>
+                <div style={{background:"#F8FAFC",borderRadius:8,padding:12,marginBottom:14}}>
+                  <div style={{fontSize:10,fontWeight:700,color:"#aaa",textTransform:"uppercase",letterSpacing:.5,marginBottom:6}}>Bill To</div>
+                  <div style={{fontWeight:700,fontSize:15}}>{cust.name}</div>
+                  {cust.phone&&<div style={{fontSize:12,color:"#666",marginTop:2}}>📞 {cust.phone}</div>}
+                  <div style={{fontSize:11,color:"#ccc",marginTop:3}}>{txn.date} · {txn.payment}</div>
+                </div>
+                <div style={{borderBottom:"2px dashed #eee",paddingBottom:14,marginBottom:14}}>
+                  <div style={{fontWeight:700,fontSize:14,marginBottom:8}}>{txn.productLabel}</div>
+                  <KV l={`Qty × Price`} v={`${txn.qty} × ${fmt(txn.price)}`}/><KV l="Gross" v={fmt(txn.gross)}/>
+                  {txn.disc>0&&<KV l={`Discount −${txn.disc}%`} v={`−${fmt(txn.discAmt)}`} vc={RD}/>}
+                  {txn.delivery>0&&<KV l="Delivery" v={`+${fmt(txn.delivery)}`}/>}
+                </div>
+                <div style={{background:"#F0FDF4",borderRadius:8,padding:12,marginBottom:14}}>
+                  <div style={{fontSize:10,fontWeight:700,color:"#166534",textTransform:"uppercase",letterSpacing:.5,marginBottom:8}}>Cost Breakdown (Owner View)</div>
+                  <KV l="Material" v={`−${fmt(txn.mat)}`} vc="#555"/><KV l="Labour" v={`−${fmt(txn.lab)}`} vc="#555"/>
+                  <KV l="Packaging" v={`−${fmt(txn.pkg)}`} vc="#555"/>
+                  <div style={{borderTop:"1px solid #BBF7D0",paddingTop:8,marginTop:4,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <span style={{fontWeight:700,fontSize:13}}>Net Profit</span>
+                    <span style={{fontWeight:800,fontSize:16,color:txn.profit>=0?"#16A34A":RD}}>{fmt(txn.profit)} <span style={{fontSize:11,color:"#aaa"}}>({txn.margin}%)</span></span>
+                  </div>
+                </div>
+                <div style={{background:G,borderRadius:10,padding:"14px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+                  <span style={{color:AU,fontWeight:800,fontSize:12,letterSpacing:.5}}>TOTAL AMOUNT</span>
+                  <span style={{color:"#fff",fontWeight:800,fontSize:24,fontFamily:"Georgia,serif"}}>{fmt(txn.revenue)}</span>
+                </div>
+                <div style={{textAlign:"center",marginBottom:14}}>
+                  <img src="https://api.qrserver.com/v1/create-qr-code/?size=80x80&data=https://wa.me/2348000000000" alt="QR" style={{borderRadius:7,border:"1px solid #eee"}}/>
+                  <div style={{fontSize:10,color:"#ccc",marginTop:3}}>Scan to WhatsApp us</div>
+                </div>
+                {txn.note&&<div style={{fontSize:12,color:"#666",background:"#FFF9F0",borderRadius:6,padding:"8px 12px",marginBottom:14,fontStyle:"italic"}}>📝 {txn.note}</div>}
+                <div style={{textAlign:"center",fontSize:11,color:"#bbb",marginBottom:16,lineHeight:1.7}}>Jazakumullahu khayran for choosing NaZ Rihal Crafts.<br/>May this Rihal bring barakah to your home. 🤲</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                  <button onClick={doPrint}    style={{background:G,        color:"#fff",border:"none",borderRadius:8,padding:"12px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>🖨️ Print / PDF</button>
+                  <button onClick={doWhatsApp} style={{background:"#25D366",color:"#fff",border:"none",borderRadius:8,padding:"12px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>💬 Send WhatsApp</button>
+                </div>
+                <button onClick={onClose} style={{width:"100%",marginTop:8,background:"#f0f0f0",color:"#666",border:"none",borderRadius:8,padding:"10px 0",fontSize:13,cursor:"pointer"}}>Close</button>
+              </div>
+            </div>
+          </div>;
+        }
+
+        /* ═══ APP ROOT ══════════════════════════════════════════════════════ */
+        const Splash=({msg})=><div style={{background:G,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{textAlign:"center"}}><div style={{color:AU,fontFamily:"Georgia,serif",fontSize:36}}>رِحَال</div><div style={{color:"#fff",fontSize:14,marginTop:8}}>{msg}</div></div></div>;
+
+        function App(){
+          const [screen,setScreen]=useState("booting");
+          const [txns,  setTxns] =useState([]);
+          const [custs, setCusts]=useState([]);
+          const [inv,   setInv]  =useState(DEF_INV);
+          const [ctr,   setCtr]  =useState(1);
+          const [tab,   setTab]  =useState("dashboard");
+          const [flash, setFlash]=useState("");
+          const [modal, setModal]=useState(null);
+
+          async function loadData(){
+            const [t,c,s,n]=await Promise.all([dg(DB.t,[]),dg(DB.c,[]),dg(DB.s,DEF_INV),dg(DB.n,1)]);
+            setTxns(t);setCusts(c);setInv(s);setCtr(n);
+          }
+
+          useEffect(()=>{
+            async function boot(){
+              _cfg=loadCfg();
+              if(!_cfg){setScreen("setup");return;}
+              _sess=loadSess();
+              if(!_sess){setScreen("login");return;}
+              setScreen("loading");
+              try{await fbRefresh();}catch{clearSess();setScreen("login");return;}
+              await loadData();
+              setScreen("app");
+            }
+            boot();
+          },[]);
+
+          useEffect(()=>{
+            if(screen!=="app")return;
+            const t=setInterval(()=>fbRefresh().catch(()=>{}),45*60*1000);
+            return()=>clearInterval(t);
+          },[screen]);
+
+          const showFlash=m=>{setFlash(m);setTimeout(()=>setFlash(""),2400);};
+          const saveTxns =t=>{setTxns(t); ds(DB.t,t);};
+          const saveCusts=c=>{setCusts(c);ds(DB.c,c);};
+          const saveInv  =s=>{setInv(s);  ds(DB.s,s);};
+          function onSale(txn,newCusts,newInv,newCtr){saveTxns([txn,...txns]);saveCusts(newCusts);saveInv(newInv);setCtr(newCtr);ds(DB.n,newCtr);showFlash("✓ Sale recorded & invoice ready!");setModal({type:"invoice",txn,custs:newCusts});}
+          function signOut(){clearSess();setScreen("login");setTxns([]);setCusts([]);setInv(DEF_INV);setCtr(1);}
+
+          if(screen==="booting")return<Splash msg="Starting…"/>;
+          if(screen==="loading")return<Splash msg="Loading your data from the cloud…"/>;
+          if(screen==="setup")  return<SetupScreen onDone={()=>setScreen("login")}/>;
+          if(screen==="login")  return<LoginScreen onLogin={async()=>{setScreen("loading");await loadData();setScreen("app");}}/>;
+
+          const sales    =txns.filter(t=>t.kind==="sale");
+          const expenses =txns.filter(t=>t.kind==="expense");
+          const totalRev =sales.reduce((s,t)=>s+t.revenue,0);
+          const totalCost=sales.reduce((s,t)=>s+t.cost,0);
+          const totalExp =expenses.reduce((s,t)=>s+t.amount,0);
+          const netProfit=totalRev-totalCost-totalExp;
+          const lowStock =INV_M.filter(i=>(inv[i.id]||0)<=i.warn);
+
+          const TABS=[{id:"dashboard",icon:"📊",l:"Dashboard"},{id:"sales",icon:"💳",l:"New Sale"},{id:"customers",icon:"👥",l:"Customers"},{id:"inventory",icon:"📦",l:"Inventory"},{id:"invoices",icon:"🧾",l:"Invoices"},{id:"expenses",icon:"💸",l:"Expenses"}];
+
+          return<div style={{background:BG,minHeight:"100vh",fontFamily:"'Segoe UI',Arial,sans-serif",color:"#111"}}>
+            <div style={{background:`linear-gradient(135deg,${G} 55%,${G2})`,borderBottom:`3px solid ${AU}`}}>
+              <div style={{maxWidth:880,margin:"0 auto",padding:"14px 16px 0"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:8,marginBottom:10}}>
+                  <div>
+                    <div style={{color:AU,fontSize:9,letterSpacing:4,fontWeight:700,textTransform:"uppercase"}}>Business Management System</div>
+                    <div style={{color:"#fff",fontFamily:"Georgia,serif",fontSize:20,fontWeight:800}}>NaZ Rihal Crafts <span style={{fontSize:13,opacity:.6}}>رِحَال</span></div>
+                    <div style={{color:"rgba(255,255,255,.35)",fontSize:10}}>☁️ {_sess?.email}</div>
+                  </div>
+                  <div style={{textAlign:"right"}}>
+                    {flash?<div style={{color:"#86efac",fontWeight:700,background:"rgba(255,255,255,.1)",padding:"6px 12px",borderRadius:8,fontSize:13}}>{flash}</div>:
+                      <div>
+                        <div style={{color:netProfit>=0?"#86efac":"#fca5a5",fontWeight:800,fontSize:14}}>Net: {fmt(netProfit)}</div>
+                        <div style={{color:"rgba(255,255,255,.45)",fontSize:11}}>{sales.length} sales · {custs.length} customers</div>
+                        {lowStock.length>0&&<div style={{color:"#fbbf24",fontSize:11}}>⚠️ {lowStock.length} low stock</div>}
+                      </div>}
+                    <button onClick={signOut} style={{marginTop:5,background:"rgba(255,255,255,.1)",color:"rgba(255,255,255,.7)",border:"1px solid rgba(255,255,255,.2)",borderRadius:6,padding:"3px 10px",fontSize:10,cursor:"pointer"}}>Sign Out</button>
+                  </div>
+                </div>
+                <div style={{display:"flex",gap:0,overflowX:"auto"}}>
+                  {TABS.map(t=><button key={t.id} onClick={()=>setTab(t.id)} style={{background:"transparent",border:"none",borderBottom:tab===t.id?`2.5px solid ${AU}`:"2.5px solid transparent",color:tab===t.id?"#fff":"rgba(255,255,255,.5)",fontWeight:tab===t.id?700:400,padding:"8px 13px",fontSize:12,cursor:"pointer",whiteSpace:"nowrap",fontFamily:"inherit"}}>{t.icon} {t.l}</button>)}
+                </div>
+              </div>
+            </div>
+            <div style={{maxWidth:880,margin:"0 auto",padding:"18px 14px"}}>
+              {tab==="dashboard"&&<Dashboard sales={sales} expenses={expenses} totalRev={totalRev} totalCost={totalCost} totalExp={totalExp} netProfit={netProfit} custs={custs} inv={inv} lowStock={lowStock} setTab={setTab}/>}
+              {tab==="sales"    &&<SalesTab custs={custs} inv={inv} ctr={ctr} onSale={onSale}/>}
+              {tab==="customers"&&<CustomersTab custs={custs} txns={txns} saveCusts={saveCusts} showFlash={showFlash}/>}
+              {tab==="inventory"&&<InventoryTab inv={inv} saveInv={saveInv} showFlash={showFlash}/>}
+              {tab==="invoices" &&<InvoicesTab sales={sales} custs={custs} setModal={setModal}/>}
+              {tab==="expenses" &&<ExpensesTab txns={txns} saveTxns={saveTxns} showFlash={showFlash}/>}
+            </div>
+            {modal?.type==="invoice"&&<InvoiceModal txn={modal.txn} custs={modal.custs||custs} onClose={()=>setModal(null)}/>}
+          </div>;
+        }
+
+        // Render to DOM root
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
